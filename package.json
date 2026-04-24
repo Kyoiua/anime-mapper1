@@ -1,7 +1,7 @@
 {
   "name": "anilist-animepahe-mapper",
   "version": "1.0.0",
-  "description": "API to map Anilist to anime sources",
+  "description": "API to map AniList to anime sources",
   "main": "src/index.js",
   "type": "module",
   "engines": {
