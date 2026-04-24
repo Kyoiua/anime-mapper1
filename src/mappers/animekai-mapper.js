@@ -1,103 +1,128 @@
-import { AniList } from '../providers/anilist.js';
-import { AnimeKai } from '../providers/animekai.js';
+import axios from 'axios';
 
-export async function mapAnilistToAnimeKai(anilistId) {
-  const mapper = new AnimeKaiMapper();
-  return await mapper.mapAnilistToAnimeKai(anilistId);
-}
-
-export class AnimeKaiMapper {
+export class AnimePahe {
   constructor() {
-    this.anilist = new AniList();
-    this.animeKai = new AnimeKai();
+    this.api = 'https://animepahe.ru/api';
+    this.base = 'https://animepahe.ru';
   }
-  async mapAnilistToAnimeKai(anilistId) {
-    try {
-      const animeInfo = await this.anilist.getAnimeInfo(parseInt(anilistId));
 
-      if (!animeInfo) {
-        throw new Error(`Anime with id ${anilistId} not found on AniList`);
+  // 🔍 Search anime
+  async scrapeSearchResults(query) {
+    const { data } = await axios.get(`${this.api}`, {
+      params: {
+        m: 'search',
+        q: query
       }
-      const searchTitle = animeInfo.title.english || animeInfo.title.romaji || animeInfo.title.userPreferred;
-      if (!searchTitle) {
-        throw new Error('No title available for the anime');
-      }
-      const searchResults = await this.animeKai.search(searchTitle);
-      if (!searchResults || !searchResults.results || searchResults.results.length === 0) {
-        return {
-          id: animeInfo.id,
-          title: searchTitle,
-          animekai: null
-        };
-      }
-      const bestMatch = this.findBestMatch(searchTitle, animeInfo, searchResults.results);
-      if (!bestMatch) {
-        return {
-          id: animeInfo.id,
-          title: searchTitle,
-          animekai: null
-        };
-      }
-      const animeDetails = await this.animeKai.fetchAnimeInfo(bestMatch.id);
+    });
 
-      return {
-        id: animeInfo.id,
-        title: searchTitle,
-        animekai: {
-          id: bestMatch.id,
-          title: bestMatch.title,
-          japaneseTitle: bestMatch.japaneseTitle,
-          url: bestMatch.url,
-          image: bestMatch.image,
-          type: bestMatch.type,
-          episodes: animeDetails.totalEpisodes,
-          episodesList: animeDetails.episodes,
-          hasSub: animeDetails.hasSub,
-          hasDub: animeDetails.hasDub,
-          subOrDub: animeDetails.subOrDub,
-          status: animeDetails.status,
-          season: animeDetails.season,
-          genres: animeDetails.genres
+    return (data?.data || []).map(a => ({
+      id: a.id,
+      session: a.session,
+      title: a.title,
+      type: a.type,
+      year: a.year,
+      poster: a.poster
+    }));
+  }
+
+  // 📺 Get episodes
+  async scrapeEpisodes(session) {
+    let page = 1;
+    let allEpisodes = [];
+
+    while (true) {
+      const { data } = await axios.get(`${this.api}`, {
+        params: {
+          m: 'release',
+          id: session,
+          sort: 'episode_asc',
+          page
         }
-      };
-    } catch (error) {
-      console.error('Error mapping AniList to AnimeKai:', error);
-      throw error;
-    }
-  }
-  findBestMatch(searchTitle, animeInfo, results) {
-    if (!results || results.length === 0) return null;
-    const normalizeTitle = title => title.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-    const normalizedSearch = normalizeTitle(searchTitle);
-    let year = null;
-    if (animeInfo.startDate && animeInfo.startDate.year) {
-      year = animeInfo.startDate.year;
-    } else if (animeInfo.seasonYear) {
-      year = animeInfo.seasonYear;
-    }
-    for (const result of results) {
-      const resultTitle = normalizeTitle(result.title);
-      const japaneseTitle = result.japaneseTitle ? normalizeTitle(result.japaneseTitle) : '';
+      });
 
-      if (resultTitle === normalizedSearch || japaneseTitle === normalizedSearch) {
-        return result;
-      }
+      if (!data?.data || data.data.length === 0) break;
+
+      const eps = data.data.map(ep => ({
+        number: ep.episode,
+        episodeId: ep.session,
+        snapshot: ep.snapshot
+      }));
+
+      allEpisodes.push(...eps);
+
+      if (page >= data.last_page) break;
+      page++;
     }
-    const expectedEpisodes = animeInfo.episodes || 0;
-    for (const result of results) {
-      const resultTitle = normalizeTitle(result.title);
-      const japaneseTitle = result.japaneseTitle ? normalizeTitle(result.japaneseTitle) : '';
-      if (result.episodes === expectedEpisodes && expectedEpisodes > 0) {
-        if (resultTitle.includes(normalizedSearch) ||
-          normalizedSearch.includes(resultTitle) ||
-          japaneseTitle.includes(normalizedSearch) ||
-          normalizedSearch.includes(japaneseTitle)) {
-          return result;
+
+    return {
+      totalEpisodes: allEpisodes.length,
+      episodes: allEpisodes
+    };
+  }
+
+  // 🎬 Get streams
+  async fetchEpisodeSources(episodeSession) {
+    // Step 1: get download page (contains kwik links)
+    const { data } = await axios.get(`${this.api}`, {
+      params: {
+        m: 'links',
+        id: episodeSession
+      }
+    });
+
+    if (!data?.data) {
+      throw new Error('No links found');
+    }
+
+    // Find kwik link
+    let kwikUrl = null;
+
+    for (const lang of Object.values(data.data)) {
+      for (const quality of Object.values(lang)) {
+        if (quality?.kwik) {
+          kwikUrl = quality.kwik;
+          break;
         }
       }
+      if (kwikUrl) break;
     }
-    return results[0];
+
+    if (!kwikUrl) {
+      throw new Error('No kwik link found');
+    }
+
+    // Step 2: extract stream from kwik
+    const stream = await this.extractKwik(kwikUrl);
+
+    return {
+      success: true,
+      sources: [
+        {
+          url: stream,
+          isM3U8: true
+        }
+      ]
+    };
+  }
+
+  // 🔓 Extract m3u8 from kwik
+  async extractKwik(url) {
+    const { data } = await axios.get(url, {
+      headers: {
+        Referer: 'https://animepahe.ru/'
+      }
+    });
+
+    // Try multiple patterns (kwik changes often)
+    let match =
+      data.match(/source:\s*"(.*?)"/) ||
+      data.match(/file:\s*"(.*?)"/) ||
+      data.match(/sources:\s*\[\{file:\s*"(.*?)"/);
+
+    if (!match) {
+      throw new Error('Stream not found in kwik');
+    }
+
+    return match[1];
   }
 }
-
-export default mapAnilistToAnimeKai; 
