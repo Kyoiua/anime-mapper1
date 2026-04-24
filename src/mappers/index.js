@@ -1,5 +1,10 @@
 import express from 'express';
-import { mapAnilistToAnimePahe, mapAnilistToHiAnime, mapAnilistToAnimeKai } from './mappers/index.js';
+import {
+  mapAnilistToAnimePahe,
+  mapAnilistToHiAnime,
+  mapAnilistToAnimeKai
+} from './mappers/index.js';
+
 import { AnimePahe } from './providers/animepahe.js';
 import { AnimeKai } from './providers/animekai.js';
 import { getEpisodeServers, getEpisodeSources } from './providers/hianime-servers.js';
@@ -25,6 +30,7 @@ app.get('/animepahe/map/:anilistId', cache('5 minutes'), async (req, res) => {
     const data = await mapAnilistToAnimePahe(req.params.anilistId);
     res.json(data);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -37,26 +43,32 @@ app.get('/hianime/:anilistId', cache('5 minutes'), async (req, res) => {
     const data = await mapAnilistToHiAnime(req.params.anilistId);
     res.json(data);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get HiAnime servers
+// HiAnime servers
 app.get('/hianime/servers/:animeId', cache('15 minutes'), async (req, res) => {
   try {
     const { animeId } = req.params;
     const { ep } = req.query;
 
-    const episodeId = ep ? `${animeId}?ep=${ep}` : animeId;
+    if (!ep) {
+      return res.status(400).json({ error: 'ep query required' });
+    }
 
+    const episodeId = `${animeId}?ep=${ep}`;
     const data = await getEpisodeServers(episodeId);
+
     res.json(data);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get HiAnime sources
+// HiAnime sources (BEST WORKING STREAMS)
 app.get('/hianime/sources/:animeId', cache('15 minutes'), async (req, res) => {
   try {
     const { animeId } = req.params;
@@ -67,11 +79,19 @@ app.get('/hianime/sources/:animeId', cache('15 minutes'), async (req, res) => {
     }
 
     const episodeId = `${animeId}?ep=${ep}`;
+
     const data = await getEpisodeSources(episodeId, server, category);
 
-    res.json({ success: true, data });
+    res.json({
+      success: true,
+      data
+    });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
@@ -83,6 +103,7 @@ app.get('/animekai/map/:anilistId', cache('5 minutes'), async (req, res) => {
     const data = await mapAnilistToAnimeKai(req.params.anilistId);
     res.json(data);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -93,20 +114,22 @@ app.get('/animekai/sources/:episodeId', cache('15 minutes'), async (req, res) =>
     const { server, dub } = req.query;
 
     const api = new AnimeKai();
+
     const data = await api.fetchEpisodeSources(
       episodeId,
       server,
-      dub === 'true'
+      dub === 'true' || dub === '1'
     );
 
     res.json(data);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ─────────────────────────────
-// AnimePahe Sources
+// AnimePahe Sources (LESS RELIABLE)
 // ─────────────────────────────
 app.get('/animepahe/sources/:session/:episodeId', cache('15 minutes'), async (req, res) => {
   try {
@@ -117,7 +140,11 @@ app.get('/animepahe/sources/:session/:episodeId', cache('15 minutes'), async (re
 
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({
+      error: err.message,
+      note: 'AnimePahe often requires Referer: https://kwik.cx/'
+    });
   }
 });
 
@@ -129,12 +156,16 @@ app.get('/animepahe/sources/:id', cache('15 minutes'), async (req, res) => {
 
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({
+      error: err.message,
+      note: 'AnimePahe may block requests'
+    });
   }
 });
 
 // ─────────────────────────────
-// HLS via AniList
+// HLS via AniList → AnimePahe
 // ─────────────────────────────
 app.get('/animepahe/hls/:anilistId/:episode', cache('15 minutes'), async (req, res) => {
   try {
@@ -142,6 +173,10 @@ app.get('/animepahe/hls/:anilistId/:episode', cache('15 minutes'), async (req, r
 
     const map = await mapAnilistToAnimePahe(anilistId);
     const eps = map?.animepahe?.episodes || [];
+
+    if (!eps.length) {
+      return res.status(404).json({ error: 'No episodes found' });
+    }
 
     let target = eps.find(e => e.number === Number(episode));
 
@@ -161,9 +196,10 @@ app.get('/animepahe/hls/:anilistId/:episode', cache('15 minutes'), async (req, r
       image: target.image || ''
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ REQUIRED FOR VERCEL
+// ✅ VERCEL EXPORT (CRITICAL)
 export default app;
